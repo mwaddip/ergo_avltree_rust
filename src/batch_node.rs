@@ -283,19 +283,38 @@ pub struct AVLTree {
     pub resolver: Resolver,
 }
 
+/// Anything that can become a [`Resolver`]: a bare closure (Arc-wrapped here) or a
+/// pre-built `Resolver` (passed through, no re-wrap). Lets [`AVLTree::new`] serve both
+/// closure callers (the interpreter's bare closures) and storage-backend callers holding
+/// a pre-built `Arc` resolver (the node's persistence backends). The two impls don't
+/// overlap because `Arc<dyn Fn>` does not itself implement `Fn`.
+pub trait IntoResolver {
+    fn into_resolver(self) -> Resolver;
+}
+impl<F: Fn(&Digest32) -> Node + Send + Sync + 'static> IntoResolver for F {
+    fn into_resolver(self) -> Resolver {
+        alloc::sync::Arc::new(self)
+    }
+}
+impl IntoResolver for Resolver {
+    fn into_resolver(self) -> Resolver {
+        self
+    }
+}
+
 impl AVLTree {
-    /// Accepts any closure (wrapped into the `Arc` internally), so callers written
-    /// against the old `Resolver = fn(&Digest32) -> Node` signature compile unchanged.
-    /// To reuse a prebuilt [`Resolver`], construct the struct literally (`resolver` is pub).
+    /// Accepts anything convertible to a [`Resolver`] (see [`IntoResolver`]): a bare
+    /// closure (Arc-wrapped here, e.g. the interpreter's 13 call sites) or a pre-built
+    /// `Resolver` passed through without re-wrapping (e.g. the node's storage backends).
     pub fn new(
-        resolver: impl Fn(&Digest32) -> Node + Send + Sync + 'static,
+        resolver: impl IntoResolver,
         key_length: usize,
         value_length: Option<usize>,
     ) -> AVLTree {
         AVLTree {
             key_length,
             value_length,
-            resolver: alloc::sync::Arc::new(resolver),
+            resolver: resolver.into_resolver(),
             height: 0,
             root: None,
         }
@@ -585,5 +604,42 @@ impl fmt::Display for AVLTree {
         } else {
             writeln!(f, "Empty tree")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+
+    fn label_only(digest: &Digest32) -> Node {
+        Node::LabelOnly(NodeHeader::new(Some(*digest), None))
+    }
+
+    // `AVLTree::new` must serve both caller shapes via `IntoResolver`:
+    // the interpreter passes bare closures; the node passes pre-built
+    // `Arc<dyn Fn>` resolvers that capture a DB handle. `Arc<dyn Fn>` is not
+    // itself `Fn`, so an `impl Fn`-only constructor (the `a4a2aa7` shape)
+    // rejected the node's calls with E0277.
+    #[test]
+    fn new_accepts_bare_closure() {
+        // fn item and inline closure (interpreter shape) — Arc-wrapped internally
+        let _ = AVLTree::new(label_only, 32, None);
+        let _ = AVLTree::new(
+            |digest: &Digest32| Node::LabelOnly(NodeHeader::new(Some(*digest), None)),
+            32,
+            None,
+        );
+    }
+
+    #[test]
+    fn new_accepts_prebuilt_resolver_without_rewrapping() {
+        // pre-built Arc<dyn Fn> Resolver (node shape) — passed through, not re-wrapped
+        let resolver: Resolver = Arc::new(label_only);
+        let tree = AVLTree::new(resolver.clone(), 32, None);
+        assert!(
+            Arc::ptr_eq(&tree.resolver, &resolver),
+            "a pre-built Resolver must pass through IntoResolver without re-wrapping"
+        );
     }
 }
