@@ -35,7 +35,7 @@ pub struct BatchAVLProver {
     // when going down the tree; needed for deletions
     last_right_step: usize,
 
-    old_top_node: Option<NodeId>,
+    pub(crate) old_top_node: Option<NodeId>,
 
     // operation has already been found in the tree
     // (if so, we know how to get to the leaf without

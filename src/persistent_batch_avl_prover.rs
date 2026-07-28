@@ -63,6 +63,7 @@ impl PersistentBatchAVLProver {
         let (root, height) = self.storage.rollback(version)?;
         self.prover.base.tree.root = Some(root);
         self.prover.base.tree.height = height;
+        self.prover.old_top_node = self.prover.base.tree.root.clone();
         Ok(())
     }
 }
