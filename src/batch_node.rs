@@ -170,6 +170,13 @@ impl Node {
         ))))
     }
 
+    pub fn new_label_persisted(label: &Digest32) -> NodeId {
+        Rc::new(RefCell::new(Node::LabelOnly(NodeHeader::new_persisted(
+            Some(*label),
+            None,
+        ))))
+    }
+
     // Private methods
     fn hdr(&'_ self) -> &'_ NodeHeader {
         match self {
@@ -206,12 +213,39 @@ impl NodeHeader {
             label,
         }
     }
+
+    /// Constructor for nodes loaded from persistent storage.
+    /// These are NOT in-session creations — `is_new = false` so that
+    /// `update()` takes the copy-on-write branch, preventing in-place
+    /// mutation of nodes shared with `old_top_node`.
+    pub fn new_persisted(label: Option<Digest32>, key: Option<ADKey>) -> NodeHeader {
+        NodeHeader {
+            visited: false,
+            is_new: false,
+            key,
+            label,
+        }
+    }
 }
 
 impl InternalNode {
     pub fn new(key: Option<ADKey>, left: &NodeId, right: &NodeId, balance: Balance) -> NodeId {
         Rc::new(RefCell::new(Node::Internal(InternalNode {
             hdr: NodeHeader::new(None, key),
+            left: left.clone(),
+            right: right.clone(),
+            balance,
+        })))
+    }
+
+    pub fn new_persisted(
+        key: Option<ADKey>,
+        left: &NodeId,
+        right: &NodeId,
+        balance: Balance,
+    ) -> NodeId {
+        Rc::new(RefCell::new(Node::Internal(InternalNode {
+            hdr: NodeHeader::new_persisted(None, key),
             left: left.clone(),
             right: right.clone(),
             balance,
@@ -268,6 +302,14 @@ impl LeafNode {
     pub fn new(key: &ADKey, value: &ADValue, next_node_key: &ADKey) -> NodeId {
         Rc::new(RefCell::new(Node::Leaf(LeafNode {
             hdr: NodeHeader::new(None, Some(key.clone())),
+            value: value.clone(),
+            next_node_key: next_node_key.clone(),
+        })))
+    }
+
+    pub fn new_persisted(key: &ADKey, value: &ADValue, next_node_key: &ADKey) -> NodeId {
+        Rc::new(RefCell::new(Node::Leaf(LeafNode {
+            hdr: NodeHeader::new_persisted(None, Some(key.clone())),
             value: value.clone(),
             next_node_key: next_node_key.clone(),
         })))
@@ -537,10 +579,10 @@ impl AVLTree {
                 buf.copy_to_slice(&mut left);
                 let mut right: Digest32 = Default::default();
                 buf.copy_to_slice(&mut right);
-                InternalNode::new(
+                InternalNode::new_persisted(
                     key,
-                    &Node::new_label(&left),
-                    &Node::new_label(&right),
+                    &Node::new_label_persisted(&left),
+                    &Node::new_label_persisted(&right),
                     balance,
                 )
             }
@@ -554,7 +596,7 @@ impl AVLTree {
                     value = buf.copy_to_bytes(value_length);
                 }
                 let next_node_key = buf.copy_to_bytes(self.key_length);
-                LeafNode::new(&key, &value, &next_node_key)
+                LeafNode::new_persisted(&key, &value, &next_node_key)
             }
             _ => {
                 panic!("Unexpected node prefix");
