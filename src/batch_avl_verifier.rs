@@ -6,6 +6,10 @@ use anyhow::*;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 
+/// Maximum allowed value length for variable-length values read from a proof.
+/// Matching the 4 MiB cap in scrypto's BatchAVLVerifier (PR #117).
+const MAX_VALUE_LENGTH: usize = 4_194_304;
+
 ///
 /// Implements the batch AVL verifier from https://eprint.iacr.org/2016/994
 ///
@@ -59,6 +63,7 @@ impl BatchAVLVerifier {
         ensure!(self.base.tree.key_length > 0);
         ensure!(starting_digest.len() == DIGEST_LENGTH + 1);
         self.base.tree.height = (starting_digest.last().unwrap() & 0xffu8) as usize;
+        ensure!(self.base.tree.height < 256);
 
         let max_nodes = if self.max_num_operations.is_some() {
             // compute the maximum number of nodes the proof can contain according to
@@ -120,6 +125,7 @@ impl BatchAVLVerifier {
                         i += 4;
                         vl
                     });
+                    ensure!(value_length <= MAX_VALUE_LENGTH, "value length {} exceeds maximum", value_length);
                     let value = Bytes::copy_from_slice(&self.proof[i..i + value_length]);
                     i += value_length;
                     let leaf = LeafNode::new(&key, &value, &next_leaf_key);
