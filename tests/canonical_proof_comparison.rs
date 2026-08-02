@@ -4,10 +4,10 @@
 //!   ~/projects/santa/jvm-blesser/src/test/scala/santa/AvlProofComparison.scala
 //! Generated 2026-07-06. Each case's proofDigest = blake2b256(proofBytes).
 
+use bytes::Bytes;
 use ergo_avltree_rust::batch_avl_prover::BatchAVLProver;
 use ergo_avltree_rust::batch_node::*;
 use ergo_avltree_rust::operation::*;
-use bytes::Bytes;
 
 fn make_prover() -> BatchAVLProver {
     let tree = AVLTree::new(
@@ -18,15 +18,31 @@ fn make_prover() -> BatchAVLProver {
     BatchAVLProver::new(tree, false)
 }
 
-fn key_a() -> ADKey { Bytes::from(vec![0xAAu8; 32]) }
-fn key_b() -> ADKey { Bytes::from(vec![0xBBu8; 32]) }
-fn key_c() -> ADKey { Bytes::from(vec![0xCCu8; 32]) }
-fn key_d() -> ADKey { Bytes::from(vec![0xDDu8; 32]) }
+fn key_a() -> ADKey {
+    Bytes::from(vec![0xAAu8; 32])
+}
+fn key_b() -> ADKey {
+    Bytes::from(vec![0xBBu8; 32])
+}
+fn key_c() -> ADKey {
+    Bytes::from(vec![0xCCu8; 32])
+}
+fn key_d() -> ADKey {
+    Bytes::from(vec![0xDDu8; 32])
+}
 
-fn val_v1() -> ADValue { Bytes::from(vec![0x01, 0x02, 0x03, 0x04]) }
-fn val_v2() -> ADValue { Bytes::from(vec![0x05, 0x06, 0x07, 0x08]) }
-fn val_v3() -> ADValue { Bytes::from(vec![0x09, 0x0a, 0x0b, 0x0c]) }
-fn val_v4() -> ADValue { Bytes::from(vec![0x0d, 0x0e, 0x0f, 0x10]) }
+fn val_v1() -> ADValue {
+    Bytes::from(vec![0x01, 0x02, 0x03, 0x04])
+}
+fn val_v2() -> ADValue {
+    Bytes::from(vec![0x05, 0x06, 0x07, 0x08])
+}
+fn val_v3() -> ADValue {
+    Bytes::from(vec![0x09, 0x0a, 0x0b, 0x0c])
+}
+fn val_v4() -> ADValue {
+    Bytes::from(vec![0x0d, 0x0e, 0x0f, 0x10])
+}
 
 fn insert(p: &mut BatchAVLProver, key: &ADKey, value: &ADValue) {
     p.perform_one_operation(&Operation::Insert(KeyValue {
@@ -103,7 +119,10 @@ fn case3_seeded_insert_lookup() {
     lookup(&mut p, &key_a());
     let proof = p.generate_proof();
     let rust_hex = base16::encode_lower(&proof);
-    assert_eq!(rust_hex, JVM_CASE3, "Case 3: proof mismatch (canonical AVL proof bytes)");
+    assert_eq!(
+        rust_hex, JVM_CASE3,
+        "Case 3: proof mismatch (canonical AVL proof bytes)"
+    );
 }
 
 #[test]
@@ -117,5 +136,8 @@ fn case4_seeded_insert_only() {
     insert(&mut p, &key_d(), &val_v4());
     let proof = p.generate_proof();
     let rust_hex = base16::encode_lower(&proof);
-    assert_eq!(rust_hex, JVM_CASE4, "Case 4: proof mismatch (canonical AVL proof bytes)");
+    assert_eq!(
+        rust_hex, JVM_CASE4,
+        "Case 4: proof mismatch (canonical AVL proof bytes)"
+    );
 }
