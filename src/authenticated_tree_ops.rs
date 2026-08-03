@@ -158,14 +158,27 @@ pub trait AuthenticatedTreeOps {
         current_root: &NodeId,
         left_child: &NodeId,
         right_child: &NodeId,
-    ) -> NodeId {
+    ) -> Result<NodeId> {
         let this = self.state();
         let new_root = this.tree.left(right_child);
+        // The promoted sub-root is whatever the proof packed under
+        // `rightChild.left`. A well-formed tree always holds an internal node
+        // there, but the verifier reads each node's balance byte straight off
+        // the proof, so a crafted proof can route a leaf or a bare label into
+        // this slot -- and the accessors below panic on those. The reference
+        // implementation casts to InternalNode here and lets the resulting
+        // ClassCastException be caught by the Try around the replay.
+        ensure!(
+            new_root.borrow().is_internal(),
+            "Malformed AVL proof: double left rotation on a non-internal node"
+        );
         let (new_left_balance, new_right_balance) = match this.tree.balance(&new_root) {
             a if a == 0 => (0i8, 0i8),
             a if a == -1 => (0i8, 1i8),
             a if a == 1 => (-1i8, 0i8),
-            a => panic!("Invalid balance {}", a),
+            // Balance bytes come from the proof verbatim, so they are not
+            // necessarily one of -1/0/1 (reference: a MatchError, also caught).
+            a => bail!("Malformed AVL proof: invalid balance {}", a),
         };
         let new_left_child = InternalNode::update(
             current_root,
@@ -181,7 +194,7 @@ pub trait AuthenticatedTreeOps {
         );
         let root = InternalNode::update(&new_root, &new_left_child, &new_right_child, 0i8);
         this.tree.root = Some(root.clone());
-        root
+        Ok(root)
     }
 
     ///
@@ -194,14 +207,20 @@ pub trait AuthenticatedTreeOps {
         current_root: &NodeId,
         left_child: &NodeId,
         right_child: &NodeId,
-    ) -> NodeId {
+    ) -> Result<NodeId> {
         let this = self.state();
         let new_root = this.tree.right(left_child);
+        // Mirror of `double_left_rotate`: the promoted sub-root comes from the
+        // proof and is only guaranteed to be internal in a well-formed tree.
+        ensure!(
+            new_root.borrow().is_internal(),
+            "Malformed AVL proof: double right rotation on a non-internal node"
+        );
         let (new_left_balance, new_right_balance) = match this.tree.balance(&new_root) {
             a if a == 0 => (0i8, 0i8),
             a if a == -1 => (0i8, 1i8),
             a if a == 1 => (-1i8, 0i8),
-            a => panic!("Invalid balance {}", a),
+            a => bail!("Malformed AVL proof: invalid balance {}", a),
         };
         let new_right_child = InternalNode::update(
             current_root,
@@ -217,7 +236,7 @@ pub trait AuthenticatedTreeOps {
         );
         let root = InternalNode::update(&new_root, &new_left_child, &new_right_child, 0i8);
         this.tree.root = Some(root.clone());
-        root
+        Ok(root)
     }
 
     ///
@@ -254,7 +273,7 @@ pub trait AuthenticatedTreeOps {
             self.modify_helper(root_node, &key, operation)?;
         if to_delete {
             let (post_delete_root_node, height_decreased) =
-                self.delete_helper(&new_root_node, false, operation, &mut saved_node);
+                self.delete_helper(&new_root_node, false, operation, &mut saved_node)?;
             if height_decreased {
                 self.tree().height -= 1;
             }
@@ -365,7 +384,7 @@ pub trait AuthenticatedTreeOps {
                                 let new_r = InternalNode::update(r_node, &self.tree().right(&new_leftm), &r.right, 0);
                                 (InternalNode::update(&new_leftm, &self.tree().left(&new_leftm), &new_r, 0), true, false, false, old_value)
                             } else {
-                                (self.double_right_rotate(r_node, &new_leftm, &r.right), true, false, false, old_value)
+                                (self.double_right_rotate(r_node, &new_leftm, &r.right)?, true, false, false, old_value)
                             }
                         } else {
                             // no need to rotate
@@ -391,7 +410,7 @@ pub trait AuthenticatedTreeOps {
                                 let new_r = InternalNode::update(r_node, &r.left, &self.tree().left(&new_rightm), 0);
                                 (InternalNode::update(&new_rightm, &new_r, &self.tree().right(&new_rightm), 0), true, false, false, old_value)
                             } else {
-                                (self.double_left_rotate(r_node, &r.left, &new_rightm), true, false, false, old_value)
+                                (self.double_left_rotate(r_node, &r.left, &new_rightm)?, true, false, false, old_value)
                             }
                         } else {
                             // no need to rotate
@@ -429,15 +448,15 @@ pub trait AuthenticatedTreeOps {
         r_node: &NodeId,
         next_leaf_key: &ADKey,
         operation: &Operation,
-    ) -> NodeId {
+    ) -> Result<NodeId> {
         self.on_node_visit(r_node, operation, false);
         match self.tree().copy(r_node) {
             Node::Leaf(node) =>
-                LeafNode::update(r_node, &node.hdr.key.unwrap(), &node.value, &next_leaf_key),
+                Ok(LeafNode::update(r_node, &node.hdr.key.unwrap(), &node.value, &next_leaf_key)),
             Node::Internal(node) =>
-                InternalNode::update(r_node, &node.left, &self.change_next_leaf_key_of_max_node(&node.right, next_leaf_key, operation), node.balance),
+                Ok(InternalNode::update(r_node, &node.left, &self.change_next_leaf_key_of_max_node(&node.right, next_leaf_key, operation)?, node.balance)),
             _ =>
-                panic!("Should never reach this point. If in prover, this is a bug. In in verifier, this proof is wrong.")
+                bail!("Should never reach this point. If in prover, this is a bug. In in verifier, this proof is wrong.")
         }
     }
 
@@ -447,15 +466,15 @@ pub trait AuthenticatedTreeOps {
         new_key: &ADKey,
         new_value: &ADValue,
         operation: &Operation,
-    ) -> NodeId {
+    ) -> Result<NodeId> {
         self.on_node_visit(r_node, operation, false);
         match self.tree().copy(r_node) {
             Node::Leaf(node) =>
-                LeafNode::update(r_node, new_key, new_value, &node.next_node_key),
+                Ok(LeafNode::update(r_node, new_key, new_value, &node.next_node_key)),
             Node::Internal(node) =>
-                InternalNode::update(r_node, &self.change_key_and_value_of_min_node(&node.left, new_key, new_value, operation), &node.right, node.balance),
+                Ok(InternalNode::update(r_node, &self.change_key_and_value_of_min_node(&node.left, new_key, new_value, operation)?, &node.right, node.balance)),
             _ =>
-                panic!("Should never reach this point. If in prover, this is a bug. In in verifier, this proof is wrong.")
+                bail!("Should never reach this point. If in prover, this is a bug. In in verifier, this proof is wrong.")
         }
     }
 
@@ -476,7 +495,7 @@ pub trait AuthenticatedTreeOps {
         delete_max: bool,
         operation: &Operation,
         saved_node: &mut Option<NodeId>,
-    ) -> (NodeId, bool) {
+    ) -> Result<(NodeId, bool)> {
         self.on_node_visit(r_node, operation, false);
 
         let direction = if delete_max {
@@ -485,7 +504,17 @@ pub trait AuthenticatedTreeOps {
             self.replay_comparison()
         };
         if let Node::Internal(r) = self.tree().copy(r_node) {
-            assert!(!(direction < 0 && r.left.borrow().is_leaf()));
+            // Every "we know X" below is an invariant of a well-formed tree, so
+            // it holds for the prover but not for a verifier replaying a
+            // crafted proof: the shape and the balance bytes are read straight
+            // off the proof. The reference implementation reaches the same
+            // states and throws (ClassCastException / MatchError / assertion),
+            // with the Try around the replay turning that into a failed
+            // operation; returning Err here does the same without panicking.
+            ensure!(
+                !(direction < 0 && r.left.borrow().is_leaf()),
+                "Malformed AVL proof: descending left into a leaf during delete"
+            );
 
             // If direction<0, this means we are not in deleteMax mode and we still haven't found
             // the value we are trying to delete
@@ -503,19 +532,23 @@ pub trait AuthenticatedTreeOps {
                         // we should save the info of leaf we are deleting,
                         // because it will be copied over to its successor
                         *saved_node = Some(r.right);
-                        return (r.left, true);
+                        return Ok((r.left, true));
                     } else {
                         // Otherwise, we really are deleting the leaf, and therefore
                         // we need to change the nextLeafKey of its predecessor
-                        assert!(direction == 0);
-                        return (
+                        ensure!(
+                            direction == 0,
+                            "Malformed AVL proof: unexpected delete direction {}",
+                            direction
+                        );
+                        return Ok((
                             self.change_next_leaf_key_of_max_node(
                                 &r.left,
                                 &right_child.next_node_key,
                                 operation,
-                            ),
+                            )?,
                             true,
-                        );
+                        ));
                     }
                 }
             }
@@ -525,29 +558,31 @@ pub trait AuthenticatedTreeOps {
                     // we delete the node and its left child (leaf); we return the right
                     // subtree, after changing the key and value stored in its leftmost leaf
                     self.on_node_visit(&r.left, operation, false);
-                    return (
+                    return Ok((
                         self.change_key_and_value_of_min_node(
                             &r.right,
                             &left_child.hdr.key.unwrap(),
                             &left_child.value,
                             operation,
-                        ),
+                        )?,
                         true,
-                    );
+                    ));
                 }
             }
             // Potential hard deletion cases:
             if direction <= 0 {
                 // going left; know left child is not a leaf; deleteMax if and only if direction == 0
                 let (new_left, child_height_decreased) =
-                    self.delete_helper(&r.left, direction == 0, operation, saved_node);
+                    self.delete_helper(&r.left, direction == 0, operation, saved_node)?;
 
                 let new_root = if direction == 0 {
                     // this is the case where we needed to delete the min of the right
                     // subtree, but, because we had two non-leaf children,
                     // we instead deleted the node that was the max of the left subtree
                     // and are copying its info
-                    let s = saved_node.take().unwrap();
+                    let s = saved_node
+                        .take()
+                        .ok_or_else(|| anyhow!("Malformed AVL proof: no saved node to copy"))?;
                     let r_with_changed_key = InternalNode::update_key(r_node, &self.tree().key(&s));
                     let left = self.tree().left(&r_with_changed_key);
                     let right = self.tree().right(&r_with_changed_key);
@@ -556,7 +591,7 @@ pub trait AuthenticatedTreeOps {
                     InternalNode::update(
                         &r_with_changed_key,
                         &left,
-                        &self.change_key_and_value_of_min_node(&right, &key, &value, operation),
+                        &self.change_key_and_value_of_min_node(&right, &key, &value, operation)?,
                         self.tree().balance(&r_with_changed_key),
                     )
                 } else {
@@ -574,10 +609,10 @@ pub trait AuthenticatedTreeOps {
                             // double left rotate
                             // I know rightChild.left is not a leaf, because rightChild has a higher subtree on the left
                             self.on_node_visit(&right_child.left, operation, true);
-                            (
-                                self.double_left_rotate(&new_root, &new_left, &root_right),
+                            Ok((
+                                self.double_left_rotate(&new_root, &new_left, &root_right)?,
                                 true,
-                            )
+                            ))
                         } else {
                             // single left rotate
                             let new_left_child = InternalNode::update(
@@ -593,10 +628,10 @@ pub trait AuthenticatedTreeOps {
                                 &right_child.right,
                                 new_rbalance,
                             );
-                            (new_r, new_rbalance == 0)
+                            Ok((new_r, new_rbalance == 0))
                         }
                     } else {
-                        panic!("Not internal node");
+                        bail!("Malformed AVL proof: rotating on a non-internal right child");
                     }
                 } else {
                     // no rotation, just recalculate newRoot.balance and childHeightDecreased
@@ -605,15 +640,15 @@ pub trait AuthenticatedTreeOps {
                     } else {
                         root_balance
                     };
-                    (
+                    Ok((
                         InternalNode::update(&new_root, &new_left, &root_right, new_balance),
                         child_height_decreased && new_balance == 0,
-                    )
+                    ))
                 }
             } else {
                 // going right; know right child is not a leaf
                 let (new_right, child_height_decreased) =
-                    self.delete_helper(&r.right, delete_max, operation, saved_node);
+                    self.delete_helper(&r.right, delete_max, operation, saved_node)?;
                 if child_height_decreased && r.balance < 0 {
                     // new to rotate because my right subtree is shorter than my left
                     self.on_node_visit(&r.left, operation, true);
@@ -624,7 +659,7 @@ pub trait AuthenticatedTreeOps {
                             // double right rotate
                             // I know leftChild.right is not a leaf, because leftChild has a higher subtree on the right
                             self.on_node_visit(&left_child.right, operation, true);
-                            (self.double_right_rotate(r_node, &r.left, &new_right), true)
+                            Ok((self.double_right_rotate(r_node, &r.left, &new_right)?, true))
                         } else {
                             // single right rotate
                             let new_right_child = InternalNode::update(
@@ -640,10 +675,10 @@ pub trait AuthenticatedTreeOps {
                                 &new_right_child,
                                 new_rbalance,
                             );
-                            (new_r, new_rbalance == 0)
+                            Ok((new_r, new_rbalance == 0))
                         }
                     } else {
-                        panic!("Not internal node");
+                        bail!("Malformed AVL proof: rotating on a non-internal left child");
                     }
                 } else {
                     // no rotation, just recalculate r.balance and childHeightDecreased
@@ -652,14 +687,14 @@ pub trait AuthenticatedTreeOps {
                     } else {
                         r.balance
                     };
-                    (
+                    Ok((
                         InternalNode::update(r_node, &r.left, &new_right, new_balance),
                         child_height_decreased && new_balance == 0,
-                    )
+                    ))
                 }
             }
         } else {
-            panic!("Not internal node");
+            bail!("Malformed AVL proof: delete on a non-internal node");
         }
     }
 }
