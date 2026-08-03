@@ -125,7 +125,11 @@ impl BatchAVLVerifier {
                         i += 4;
                         vl
                     });
-                    ensure!(value_length <= MAX_VALUE_LENGTH, "value length {} exceeds maximum", value_length);
+                    ensure!(
+                        value_length <= MAX_VALUE_LENGTH,
+                        "value length {} exceeds maximum",
+                        value_length
+                    );
                     let value = Bytes::copy_from_slice(&self.proof[i..i + value_length]);
                     i += value_length;
                     let leaf = LeafNode::new(&key, &value, &next_leaf_key);
