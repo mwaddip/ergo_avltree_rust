@@ -91,13 +91,22 @@ impl Operation {
                 None if kv.delta > 0 => Ok(Some(Bytes::copy_from_slice(&kv.delta.to_be_bytes()))),
                 None if kv.delta < 0 => Err(anyhow!("Trying to decrease non-existing value")),
                 Some(old) => {
-                    let new_val = BigEndian::read_i64(&old) + kv.delta;
-                    if new_val == 0 {
-                        Ok(None)
-                    } else if new_val > 0 {
-                        Ok(Some(Bytes::copy_from_slice(&new_val.to_be_bytes())))
-                    } else {
-                        Err(anyhow!("New value is negative"))
+                    // Checked, not wrapping: the old value comes from the proof
+                    // and the delta from the operation, so the sum can leave
+                    // i64 in either direction. A plain `+` panics in debug and
+                    // wraps in release, and the sign tests below would then run
+                    // on the wrapped value -- turning a negative overflow into
+                    // a large positive stored value, or into a removal when the
+                    // wrap lands exactly on zero. The reference adds with
+                    // Math.addExact, whose ArithmeticException is NonFatal and
+                    // so becomes a failed operation.
+                    match BigEndian::read_i64(&old).checked_add(kv.delta) {
+                        None => Err(anyhow!("New value overflows i64")),
+                        Some(0) => Ok(None),
+                        Some(new_val) if new_val > 0 => {
+                            Ok(Some(Bytes::copy_from_slice(&new_val.to_be_bytes())))
+                        }
+                        Some(_) => Err(anyhow!("New value is negative")),
                     }
                 }
                 None => Ok(None), // should not happen, but rust compiler ca not infer it
