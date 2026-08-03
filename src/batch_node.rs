@@ -98,15 +98,60 @@ impl Node {
                 label
             }
             Node::Internal(node) => {
+                // Label both subtrees iteratively before hashing this node, so
+                // that the hashing below reads two ready-made labels and never
+                // descends. This used to recurse into the children directly,
+                // which made the depth of the recursion the depth of the tree
+                // -- and a verifier's tree comes from proof bytes, so a crafted
+                // deep spine exhausted the stack (an abort, not a catchable
+                // panic) before any operation ran.
+                Node::label_subtree(&node.left);
+                Node::label_subtree(&node.right);
                 let mut hasher = Blake2b256::new();
                 hasher.update(&[1u8; 1]);
                 hasher.update(&[node.balance as u8; 1]);
-                hasher.update(node.left.borrow_mut().label());
-                hasher.update(node.right.borrow_mut().label());
+                hasher.update(node.left.borrow().get_label());
+                hasher.update(node.right.borrow().get_label());
                 let mut label: Digest32 = Default::default();
                 label.copy_from_slice(&hasher.finalize());
                 node.hdr.label = Some(label);
                 label
+            }
+        }
+    }
+
+    /// Memoise the label of every node in the subtree rooted at `node`, using
+    /// an explicit stack so that the traversal cost is heap, not stack.
+    ///
+    /// Nodes that already carry a label are skipped, so the walk stops at the
+    /// memoised boundary exactly as the recursive version did. `label()` is
+    /// only ever called here on a node whose children are already labelled, so
+    /// it returns without descending.
+    fn label_subtree(node: &NodeId) {
+        // (node, children_already_processed)
+        let mut stack: Vec<(NodeId, bool)> = vec![(node.clone(), false)];
+        while let Some((current, children_done)) = stack.pop() {
+            if current.borrow().hdr().label.is_some() {
+                continue;
+            }
+            if children_done {
+                current.borrow_mut().label();
+                continue;
+            }
+            let children = match &*current.borrow() {
+                Node::Internal(inner) => Some((inner.left.clone(), inner.right.clone())),
+                _ => None,
+            };
+            match children {
+                Some((left, right)) => {
+                    stack.push((current, true));
+                    stack.push((right, false));
+                    stack.push((left, false));
+                }
+                // Leaves and label-only nodes are self-contained.
+                None => {
+                    current.borrow_mut().label();
+                }
             }
         }
     }
