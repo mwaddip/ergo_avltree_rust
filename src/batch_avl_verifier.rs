@@ -10,6 +10,14 @@ use bytes::Bytes;
 /// Matching the 4 MiB cap in scrypto's BatchAVLVerifier (PR #117).
 const MAX_VALUE_LENGTH: usize = 4_194_304;
 
+/// Maximum depth of the explicit tree skeleton carried by a proof.
+///
+/// An AVL digest stores its tree height in one byte, so a well-formed proof
+/// cannot expose a path with more than 255 internal nodes. Enforcing that
+/// format bound while reconstructing also bounds every later recursive walk
+/// and `Rc` teardown.
+const MAX_PROOF_DEPTH: usize = u8::MAX as usize;
+
 ///
 /// Implements the batch AVL verifier from https://eprint.iacr.org/2016/994
 ///
@@ -95,7 +103,10 @@ impl BatchAVLVerifier {
         let mut num_nodes = 0;
         let mut i: usize = 0;
         let mut previous_leaf: Option<NodeId> = None;
-        let mut stack: Vec<NodeId> = Vec::new();
+        // Each entry carries the depth of the explicit proof skeleton rooted
+        // at that node. Label-only nodes can hide a subtree, but they cannot
+        // increase the explicit path materialised by this verifier.
+        let mut stack: Vec<(NodeId, usize)> = Vec::new();
         let key_length = self.base.tree.key_length;
         while self.proof[i] != END_OF_TREE_IN_PACKAGED_PROOF {
             let n = self.proof[i];
@@ -107,7 +118,7 @@ impl BatchAVLVerifier {
                     let mut label: Digest32 = Default::default();
                     label.copy_from_slice(&self.proof[i..i + DIGEST_LENGTH]);
                     i += DIGEST_LENGTH;
-                    stack.push(Node::new_label(&label));
+                    stack.push((Node::new_label(&label), 0));
                     previous_leaf = None;
                 }
                 LEAF_IN_PACKAGED_PROOF => {
@@ -125,23 +136,34 @@ impl BatchAVLVerifier {
                         i += 4;
                         vl
                     });
-                    ensure!(value_length <= MAX_VALUE_LENGTH, "value length {} exceeds maximum", value_length);
+                    ensure!(
+                        value_length <= MAX_VALUE_LENGTH,
+                        "value length {} exceeds maximum",
+                        value_length
+                    );
                     let value = Bytes::copy_from_slice(&self.proof[i..i + value_length]);
                     i += value_length;
                     let leaf = LeafNode::new(&key, &value, &next_leaf_key);
-                    stack.push(leaf.clone());
+                    stack.push((leaf.clone(), 0));
                     previous_leaf = Some(leaf);
                 }
                 _ => {
-                    let right = stack.pop().unwrap();
-                    let left = stack.pop().unwrap();
-                    stack.push(InternalNode::new(None, &left, &right, n as Balance));
+                    let (right, right_depth) = stack.pop().unwrap();
+                    let (left, left_depth) = stack.pop().unwrap();
+                    let depth = core::cmp::max(left_depth, right_depth) + 1;
+                    ensure!(
+                        depth <= MAX_PROOF_DEPTH,
+                        "proof tree depth {} exceeds maximum {}",
+                        depth,
+                        MAX_PROOF_DEPTH
+                    );
+                    stack.push((InternalNode::new(None, &left, &right, n as Balance), depth));
                 }
             }
         }
 
         ensure!(stack.len() == 1);
-        let root = stack.pop().unwrap();
+        let (root, _) = stack.pop().unwrap();
         ensure!(starting_digest.starts_with(&self.base.tree.label(&root)));
         self.base.tree.root = Some(root);
         self.directions_index = (i + 1) * 8; // Directions start right after the packed tree, which we just finished
